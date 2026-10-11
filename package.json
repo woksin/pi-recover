@@ -1,0 +1,17 @@
+{
+  "name": "local-pi-recover",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only session recovery reports and a /recover command",
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-timeout=30000 'test/*.test.ts'",
+    "scan": "node scripts/scan.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.0.2"
+  },
+  "pi": {
+    "extensions": ["./src/extension.ts"]
+  }
+}
