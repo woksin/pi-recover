@@ -93,3 +93,7 @@ pi --no-session -e ./src/extension.ts --help
 
 Tests use only synthetic session fixtures, fake Pi APIs, bounded local git probes, and test-owned temporary directories. The scan prints counts only, including normal messages previously misclassified as errors, never private session text. Typechecking resolves the local devDependencies, without relying on the host's installation
 layout. `npm test` and `npm run typecheck` are the local gates; neither calls a model.
+
+## Releasing
+
+CI (`.github/workflows/ci.yml`) runs the tests on Node 22 and 24 for every push and pull request. To release, bump `version` in `package.json`, commit, and publish a GitHub release tagged `v<version>`. `.github/workflows/publish.yml` then runs CI again and publishes to npm with provenance. That works through npm trusted publishing when it is set up for this repository, or otherwise through an `NPM_TOKEN` repository secret.
