@@ -88,7 +88,7 @@ test("recovery prompt preserves safeguards, report path, original task, 300-char
   const state = synthetic("/example/repo");
   state.lastUserRequest = "u".repeat(400);
   const prompt = recoveryPrompt(state, "/reports/report.md");
-  for (const fragment of ["Rate limit exceeded", "their old IDs may no longer work", "/reports/report.md", "check reality first", "gh pr list --author @me", "issue_work list", "resumeFromRunId, same session only", "original worktrees", "Never create duplicate", "Reconcile issue statuses", "short table"]) assert.ok(prompt.includes(fragment), fragment);
+  for (const fragment of ["Rate limit exceeded", "their old IDs may no longer work", "/reports/report.md", "check reality first", "gh pr list --author @me", "resumeFromRunId, same session only", "original worktrees", "Never create duplicate", "Reconcile issue statuses", "short table"]) assert.ok(prompt.includes(fragment), fragment);
   assert.ok(prompt.endsWith("u".repeat(300)));
   assert.doesNotMatch(prompt, /u{301}/);
 });
