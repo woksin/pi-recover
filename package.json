@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "test": "node --test --test-timeout=30000 'test/*.test.ts'",
-    "scan": "node scripts/scan.ts"
+    "scan": "node scripts/scan.ts",
+    "typecheck": "node scripts/typecheck.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.0.2"

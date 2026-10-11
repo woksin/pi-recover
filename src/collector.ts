@@ -1,6 +1,8 @@
 import type { RecoveryState, Thread } from "./types.ts";
+import { RECOVERED_TYPE, RECOVERY_PROMPT_MARKER } from "./markers.ts";
 
 export const LIMIT_ERROR = /usage[\s_-]*limit|rate[\s_-]*limit|quota|\b429\b|overloaded/i;
+// "steered" is deliberately non-terminal: steering does not finish an agent.
 const AGENT_TERMINAL = new Set(["completed", "error", "aborted", "stopped"]);
 const JOB_TERMINAL = new Set(["succeeded", "failed", "timed_out", "timed out", "timed-out", "killed", "matched"]);
 
@@ -18,10 +20,8 @@ export function contentText(content: unknown): string {
 }
 export function assistantError(message: unknown): string {
   const m = object(message);
-  if (m.role !== "assistant") return "";
-  const text = string(m.errorMessage) || contentText(m.content);
-  return m.stopReason === "error" || m.stopReason === "aborted" || LIMIT_ERROR.test(text)
-    ? text || `Assistant stopped: ${string(m.stopReason)}` : "";
+  if (m.role !== "assistant" || (m.stopReason !== "error" && m.stopReason !== "aborted")) return "";
+  return string(m.errorMessage);
 }
 
 interface Completion {
@@ -146,6 +146,7 @@ export class Collector {
   private calls = new Map<string, Thread>();
   private kills = new Map<string, string>();
   private completions: Completion[] = [];
+  private recovered = new Set<string>();
   private index = 0;
 
   add(input: unknown): void {
@@ -167,6 +168,11 @@ export class Collector {
       this.state.cwd = string(entry.cwd);
     } else if (entry.type === "message") {
       this.message(object(entry.message), index);
+    } else if (entry.type === "custom" && entry.customType === RECOVERED_TYPE) {
+      const callIds = object(entry.data).callIds;
+      for (const id of Array.isArray(callIds) ? callIds : []) {
+        if (typeof id === "string") this.recovered.add(id);
+      }
     } else if (entry.type === "custom" && entry.customType === "subagents:record") {
       const data = object(entry.data);
       if (AGENT_TERMINAL.has(string(data.status))) this.completions.push({
@@ -180,12 +186,15 @@ export class Collector {
   }
 
   private message(message: ObjectData, index: number): void {
-    if (message.role === "user") this.state.lastUserRequest = contentText(message.content).slice(0, 1500);
+    if (message.role === "user") {
+      const text = contentText(message.content);
+      if (!text.startsWith(RECOVERY_PROMPT_MARKER + "\n")) this.state.lastUserRequest = text.slice(0, 1500);
+    }
     if (message.role === "assistant") {
       const text = contentText(message.content);
       if (text) this.state.lastAssistantText = text;
       this.state.errorText = assistantError(message);
-      this.state.endedOnError = Boolean(this.state.errorText);
+      this.state.endedOnError = message.stopReason === "error" || message.stopReason === "aborted";
       for (const item of Array.isArray(message.content) ? message.content : []) {
         const call = object(item);
         if (call.type !== "toolCall") continue;
@@ -213,6 +222,20 @@ export class Collector {
       // Latest eligible start only: jN can be reused after a process restart.
       const thread = this.state.threads.findLast(candidate => matches(candidate, completion));
       if (thread && thread.resultIndex !== undefined) finish(thread, completion.status, `Later ${completion.kind} completion recorded: ${completion.status}`);
+    }
+    for (const thread of this.state.threads) {
+      if (thread.kind === "agent" && thread.resume) {
+        const original = this.state.threads.find(candidate => candidate.kind === "agent" && !candidate.resume && candidate.startIndex < thread.startIndex && candidate.id !== undefined && (candidate.id === thread.resume || candidate.id === thread.id));
+        if (original) {
+          thread.originalPrompt = original.prompt;
+          thread.originalCallId = original.callId;
+          thread.originalAgentId = original.id;
+        }
+      }
+      if (this.recovered.has(thread.callId)) {
+        thread.state = "superseded";
+        thread.evidence = "Already handed off by /recover (pi-recover:recovered marker).";
+      }
     }
     return this.state;
   }

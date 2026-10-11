@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { collect, assistantError } from "../src/collector.ts";
-import { looseThreads } from "../src/types.ts";
+import { looseThreads, protectLiveThreads } from "../src/types.ts";
+import { RECOVERED_TYPE, RECOVERY_PROMPT_MARKER } from "../src/markers.ts";
 import { call, result, session, notification, jobCompletion, text } from "./helpers.ts";
 
 const agentArgs = { description: "Implement small fix", subagent_type: "implementer", name: "fixer", prompt: "Full\noriginal prompt", isolation: "worktree" };
@@ -181,9 +182,11 @@ test("malformed and truncated lines are counted; last user, assistant, timestamp
 
 test("error-ending detection uses the final assistant, not any past error", () => {
   for (const error of ["usage limit", "rate_limit exceeded", "quota exhausted", "HTTP 429", "overloaded"]) {
-    assert.equal(assistantError({ role: "assistant", content: text(error), stopReason: "stop" }), error);
+    assert.equal(assistantError({ role: "assistant", content: text(error), errorMessage: error, stopReason: "stop" }), "");
+    assert.equal(assistantError({ role: "assistant", content: text("Do not use content as the error"), errorMessage: error, stopReason: "error" }), error);
   }
-  assert.match(assistantError({ role: "assistant", content: [], stopReason: "aborted" }), /aborted/);
+  assert.equal(assistantError({ role: "assistant", content: [], stopReason: "aborted", errorMessage: "User aborted" }), "User aborted");
+  assert.equal(assistantError({ role: "assistant", content: text("HTTP 429"), stopReason: "error" }), "");
   assert.equal(assistantError({ role: "user", content: text("rate limit") }), "");
   const state = collect([{ type: "message", message: { role: "assistant", stopReason: "error", errorMessage: "429" } },
     { type: "message", message: { role: "assistant", stopReason: "stop", content: text("Recovered") } }]);

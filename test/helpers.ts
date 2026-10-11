@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { TestContext } from "node:test";
@@ -31,14 +31,47 @@ export function fakePi(cwd: string, file?: string) {
   const handlers = new Map<string, any[]>();
   const sent: { text: string; options: unknown }[] = [];
   const notes: { text: string; level: string }[] = [];
-  const ctx = { cwd, sessionManager: { getSessionFile: () => file }, ui: {
+  const appended: { customType: string; data: any }[] = [];
+  const memory: any[] = [];
+  const tasks: Promise<void>[] = [];
+  const entries = (): any[] => {
+    if (!file) return memory;
+    try { return readFileSync(file, "utf8").split("\n").flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }); }
+    catch { return []; }
+  };
+  const persist = (entry: unknown) => {
+    if (file) appendFileSync(file, JSON.stringify(entry) + "\n");
+    else memory.push(entry);
+  };
+  const ctx = { cwd, sessionManager: {
+    getSessionFile: () => file,
+    getSessionId: () => entries().find(entry => entry.type === "session")?.id ?? "fresh-session",
+    getEntries: () => entries().filter(entry => entry.type !== "session"),
+  }, ui: {
     notify: (text: string, level: string) => notes.push({ text, level }),
   } };
   const pi = {
     registerCommand: (name: string, command: any) => commands.set(name, command),
     on: (name: string, handler: any) => handlers.set(name, [...handlers.get(name) ?? [], handler]),
-    sendUserMessage: (text: string, options: unknown) => sent.push({ text, options }),
+    sendUserMessage: (value: string, options: unknown) => {
+      sent.push({ text: value, options });
+      persist({ type: "message", message: { role: "user", content: text(value) } });
+    },
+    appendEntry: (customType: string, data: unknown) => {
+      appended.push({ customType, data });
+      persist({ type: "custom", customType, data });
+    },
   };
-  return { pi, ctx, sent, notes, command: (args = "") => commands.get("recover").handler(args, ctx),
+  return { pi, ctx, sent, notes, appended, persist,
+    trackBackground: (task: Promise<void>) => { tasks.push(task); },
+    drain: async () => { await Promise.all(tasks.splice(0)); },
+    command: (args = "") => commands.get("recover").handler(args, ctx),
     emit: async (name: string, event: unknown) => { for (const handler of handlers.get(name) ?? []) await handler(event, ctx); } };
+}
+
+export function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
 }

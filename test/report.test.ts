@@ -27,7 +27,7 @@ test("report rendering contains header, loose table/details, probes, finished su
     promptFiles: new Map([["agent", "/reports/prompts/1-small-fix.md"]]), logTails: new Map([["job", "CI log tail"]]), sourceFile: "/sessions/synthetic.jsonl" });
   for (const fragment of ["# Pi recovery report", "Session: synthetic-session", "Rate limit exceeded", "Finish the original task",
     "| agent | agent-1 | Small fix | unfinished |", "| job | j1 | CI | unfinished |", "| workflow | wf_open | review | unfinished |",
-    "Original prompt file: /reports/prompts/1-small-fix.md", "Resume: old-agent", "isolation", "gh run watch 42 --exit-status", "CI log tail",
+    "Resume prompt file: /reports/prompts/1-small-fix.md", "Resume: old-agent", "isolation", "gh run watch 42 --exit-status", "CI log tail",
     "Run ID: wf_open", "/example/review.js", '"author": "test"', "Branch: feature; upstream: origin/main", "2\t1", "abc123 commit",
     "## Finished threads", "Finished task", "## Scheduled agents (not restartable automatically)", "Later task"]) {
     assert.ok(report.toLowerCase().includes(fragment.toLowerCase()), fragment);
@@ -46,7 +46,7 @@ test("saved prompts are exact, reports/log tails private, duplicate timestamp do
   const file = await writeReport(state, { repos: [], notes: [] }, opts);
   const report = await readFile(file, "utf8");
   assert.match(file, /\.ai-work\/recover\/synthetic-se-2026-01-01T00-00-00.000Z\/report.md$/);
-  const prompt = report.match(/Original prompt file: (.+)/)![1];
+  const prompt = report.match(/Resume prompt file: (.+)/)![1];
   assert.equal(await readFile(prompt, "utf8"), "Original prompt\nverbatim");
   assert.match(report, /line 31\n/);
   assert.doesNotMatch(report, /line 30\n/);
@@ -88,7 +88,7 @@ test("recovery prompt preserves safeguards, report path, original task, 300-char
   const state = synthetic("/example/repo");
   state.lastUserRequest = "u".repeat(400);
   const prompt = recoveryPrompt(state, "/reports/report.md");
-  for (const fragment of ["Rate limit exceeded", "IDs are invalid in this process", "/reports/report.md", "check reality first", "gh pr list --author @me", "issue_work list", "resumeFromRunId, same session only", "original worktrees", "Never create duplicate", "Reconcile issue statuses", "short table"]) assert.ok(prompt.includes(fragment), fragment);
+  for (const fragment of ["Rate limit exceeded", "their old IDs may no longer work", "/reports/report.md", "check reality first", "gh pr list --author @me", "issue_work list", "resumeFromRunId, same session only", "original worktrees", "Never create duplicate", "Reconcile issue statuses", "short table"]) assert.ok(prompt.includes(fragment), fragment);
   assert.ok(prompt.endsWith("u".repeat(300)));
   assert.doesNotMatch(prompt, /u{301}/);
 });

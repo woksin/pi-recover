@@ -1,21 +1,24 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFile, readFile, mkdir, readdir } from "node:fs/promises";
+import { writeFile, readFile, mkdir, readdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import defaultExtension, { createRecoverExtension } from "../src/extension.ts";
+import { collect } from "../src/collector.ts";
+import { RECOVERED_TYPE, RECOVERY_PROMPT_MARKER } from "../src/markers.ts";
 import { parseArguments, readSession, resolveSession } from "../src/sessions.ts";
-import { call, result, session, tempDir, fakePi } from "./helpers.ts";
+import { call, result, session, tempDir, fakePi, text, deferred } from "./helpers.ts";
 
 async function setup(t: Parameters<typeof tempDir>[0], loose = true) {
   const dir = tempDir(t), file = join(dir, "session.jsonl");
-  const entries = [session(dir)];
-  if (loose) entries.push(call("Agent", "a", { description: "Recover me", prompt: "Verbatim\nprompt", subagent_type: "implementer" }) as any,
-    result("Agent", "a", "Agent ID: agent-open") as any);
+  const entries: unknown[] = [session(dir), { type: "message", message: { role: "user", content: text("Finish the original task") } }];
+  if (loose) entries.push(call("Agent", "a", { description: "Recover me", prompt: "Verbatim\nprompt", subagent_type: "implementer" }), result("Agent", "a", "Agent ID: agent-open"));
   await writeFile(file, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
-  return { dir, file, entries, fake: fakePi(dir, file) };
+  const fake = fakePi(dir, file);
+  return { dir, file, entries, fake, options: { home: dir, probe: noProbe, onBackgroundTask: fake.trackBackground } };
 }
-
 const noProbe = async () => ({ repos: [], notes: [] });
+const limitEvent = { type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Usage limit reached" } };
+const reportPath = (note: string) => note.match(/recovery report: (.+?)(?: \(dry run.*)?$/)![1];
 
 test("default factory registers without effects", () => {
   const fake = fakePi("/example");
@@ -24,66 +27,144 @@ test("default factory registers without effects", () => {
   assert.equal(fake.notes.length, 0);
 });
 
-test("--dry writes real report and original prompt without injection", async t => {
-  const { dir, fake } = await setup(t);
-  createRecoverExtension({ home: dir, probe: noProbe })(fake.pi as any);
+test("--dry writes real report and original prompt without injection or recovered marker", async t => {
+  const { fake, options } = await setup(t);
+  createRecoverExtension(options)(fake.pi as any);
   await fake.command("--dry");
   assert.equal(fake.sent.length, 0);
+  assert.equal(fake.appended.length, 0);
   assert.equal(fake.notes.length, 1);
-  const report = fake.notes[0].text.match(/recovery report: (.+) \(dry run/)![1];
-  assert.match(await readFile(report, "utf8"), /agent-open/);
+  assert.match(await readFile(reportPath(fake.notes[0].text), "utf8"), /agent-open/);
   assert.match(fake.notes[0].text, /1 loose threads/);
 });
 
-test("default writes report and injects exactly one user message", async t => {
-  const { dir, fake } = await setup(t);
-  createRecoverExtension({ home: dir, probe: noProbe })(fake.pi as any);
+test("default injects exactly one marked prompt then records the covered call IDs", async t => {
+  const { fake, options } = await setup(t);
+  createRecoverExtension(options)(fake.pi as any);
   await fake.command();
   assert.equal(fake.sent.length, 1);
   assert.deepEqual(fake.sent[0].options, { deliverAs: "followUp" });
-  const report = fake.notes[0].text.match(/recovery report: (.+)/)![1];
+  assert.ok(fake.sent[0].text.startsWith(RECOVERY_PROMPT_MARKER + "\n"));
+  const report = reportPath(fake.notes[0].text);
   assert.ok(fake.sent[0].text.includes(report));
   assert.match(await readFile(report, "utf8"), /Recover me/);
+  assert.equal(fake.appended[0].customType, RECOVERED_TYPE);
+  assert.deepEqual(fake.appended[0].data.callIds, ["a"]);
+  assert.ok(!Number.isNaN(Date.parse(fake.appended[0].data.at)));
 });
 
-test("zero loose threads gives notify only, without probe or files", async t => {
-  const { dir, fake } = await setup(t, false);
-  createRecoverExtension({ home: dir, probe: async () => { throw new Error("Must not probe"); } })(fake.pi as any);
+test("later /recover and a new --continue hint exclude superseded work and preserve original request", async t => {
+  const { file, fake, options } = await setup(t);
+  createRecoverExtension(options)(fake.pi as any);
+  await fake.command();
+  await fake.command();
+  assert.equal(fake.sent.length, 1);
+  assert.equal(fake.appended.length, 1);
+  assert.match(fake.notes[1].text, /nothing to recover; 0 live; 1 superseded/);
+  const state = await readSession(file);
+  assert.equal(state.lastUserRequest, "Finish the original task");
+  assert.equal(state.threads[0].state, "superseded");
+  const continued = fakePi(fake.ctx.cwd, file);
+  createRecoverExtension({ ...options, onBackgroundTask: continued.trackBackground })(continued.pi as any);
+  await continued.emit("session_start", { type: "session_start", reason: "startup" });
+  await continued.drain();
+  assert.equal(continued.notes.length, 0);
+});
+
+test("live agents, jobs and workflows are separate and excluded from injection and markers", async t => {
+  const { fake, options } = await setup(t);
+  createRecoverExtension(options)(fake.pi as any);
+  await fake.emit("session_start", { type: "session_start", reason: "startup" });
+  await fake.drain();
+  fake.notes.length = 0;
+  fake.persist(call("Agent", "live-agent", { description: "Live agent", prompt: "Do not relaunch" }));
+  fake.persist(result("Agent", "live-agent", "Agent ID: agent-live"));
+  fake.persist(call("job_watch", "live-job", { check: "true", label: "Live watch" }));
+  fake.persist(result("job_watch", "live-job", "Started watch j1"));
+  fake.persist(call("SubagentWorkflow", "live-workflow", { name: "Live workflow" }));
+  fake.persist(result("SubagentWorkflow", "live-workflow", "Task ID: wf_live"));
+  await fake.command();
+  assert.match(fake.notes[0].text, /1 loose threads; 3 live/);
+  const report = await readFile(reportPath(fake.notes[0].text), "utf8");
+  assert.doesNotMatch(report.split("## Live threads")[0], /Live agent|Live watch|Live workflow/);
+  assert.match(report, /## Live threads \(do not relaunch\)/);
+  assert.match(report, /agent-live/);
+  assert.match(report, /wf_live/);
+  assert.deepEqual(fake.appended[0].data.callIds, ["a"]);
+  assert.doesNotMatch(fake.sent[0].text, /agent-live|wf_live|Live watch/);
+  assert.doesNotMatch(fake.sent[0].text, /from it are dead/);
+});
+
+test("live-only current sessions, including an explicit symlink target, write a report but do not inject", async t => {
+  const { dir, file, fake, options } = await setup(t, false);
+  createRecoverExtension(options)(fake.pi as any);
+  await fake.emit("session_start", { type: "session_start", reason: "new" });
+  fake.persist(call("job_start", "live", { command: "true" }));
+  fake.persist(result("job_start", "live", "Started job j1"));
+  const alias = join(dir, "alias.jsonl");
+  await symlink(file, alias);
+  await fake.command(alias);
+  assert.equal(fake.sent.length, 0);
+  assert.equal(fake.appended.length, 0);
+  assert.match(fake.notes[0].text, /nothing to recover; 1 live/);
+  assert.match(await readFile(reportPath(fake.notes[0].text), "utf8"), /Started in this process/);
+});
+
+test("reload conservatively protects existing threads; no session_start retains prior-run behavior", async t => {
+  const { fake, options } = await setup(t);
+  createRecoverExtension(options)(fake.pi as any);
+  await fake.emit("session_start", { type: "session_start", reason: "reload" });
+  await fake.command();
+  assert.equal(fake.sent.length, 0);
+  assert.match(fake.notes[0].text, /1 live/);
+});
+
+test("zero threads gives notify only, without probe or files", async t => {
+  const { dir, fake, options } = await setup(t, false);
+  createRecoverExtension({ ...options, probe: async () => { throw new Error("Must not probe"); } })(fake.pi as any);
   await fake.command("--dry");
   assert.deepEqual(fake.notes, [{ text: "nothing to recover", level: "info" }]);
   assert.equal(fake.sent.length, 0);
   assert.deepEqual(await readdir(dir), ["session.jsonl"]);
 });
 
-test("ambiguous id prefix lists candidates without writing or injecting", async t => {
-  const { dir, fake } = await setup(t);
+test("ambiguous id prefix lists at most ten candidates and remaining count", async t => {
+  const { dir, fake, options } = await setup(t);
   const root = join(dir, "sessions"), sub = join(root, "cwd");
   await mkdir(sub, { recursive: true });
-  const files = [join(sub, "2026-01-01T00-00-00_abc111.jsonl"), join(sub, "2026-01-01T00-00-00_abc222.jsonl")];
+  const files = Array.from({ length: 13 }, (_, i) => join(sub, `date_abc${String(i).padStart(3, "0")}.jsonl`));
   for (const file of files) await writeFile(file, JSON.stringify(session(dir)));
-  createRecoverExtension({ home: dir, sessionsRoot: root, probe: noProbe })(fake.pi as any);
+  createRecoverExtension({ ...options, sessionsRoot: root })(fake.pi as any);
   await fake.command("abc");
   assert.equal(fake.sent.length, 0);
   assert.equal(fake.notes[0].level, "error");
   assert.match(fake.notes[0].text, /Ambiguous session id prefix abc/);
-  files.forEach(file => assert.ok(fake.notes[0].text.includes(file)));
+  files.slice(0, 10).forEach(file => assert.ok(fake.notes[0].text.includes(file)));
+  files.slice(10).forEach(file => assert.ok(!fake.notes[0].text.includes(file)));
+  assert.match(fake.notes[0].text, /and 3 more/);
 });
 
-test("explicit external path recovers into a new unsaved session using source cwd", async t => {
+test("external path recovery into a new session records a receipt there and does not repeat", async t => {
   const { dir, file } = await setup(t);
   const fake = fakePi(join(dir, "new-session"));
-  createRecoverExtension({ home: dir, probe: noProbe })(fake.pi as any);
+  createRecoverExtension({ home: dir, probe: noProbe, onBackgroundTask: fake.trackBackground })(fake.pi as any);
+  await fake.emit("session_start", { type: "session_start", reason: "new" });
   await fake.command(`--dry "${file}"`);
-  assert.equal(fake.notes[0].level, "info");
-  assert.match(fake.notes[0].text, /recovery report:/);
   assert.equal(fake.sent.length, 0);
+  assert.equal(fake.appended.length, 0);
+  await fake.command(file);
+  await fake.command(file);
+  assert.equal(fake.sent.length, 1);
+  assert.equal(fake.appended.length, 1);
+  assert.match(fake.notes[2].text, /1 superseded/);
 });
 
-test("session_start resume and startup hint only; new/reload/fork do nothing", async t => {
+test("session_start resume/startup hint only; new/reload/fork do not notify or write", async t => {
   for (const reason of ["resume", "startup", "new", "reload", "fork"]) {
-    const { dir, fake } = await setup(t);
-    createRecoverExtension({ home: dir, probe: async () => { throw new Error("Must not probe"); } })(fake.pi as any);
+    const { dir, fake, options } = await setup(t);
+    createRecoverExtension({ ...options, probe: async () => { throw new Error("Must not probe"); } })(fake.pi as any);
     await fake.emit("session_start", { type: "session_start", reason });
+    await fake.drain();
     assert.equal(fake.notes.length, ["resume", "startup"].includes(reason) ? 1 : 0);
     if (fake.notes.length) assert.match(fake.notes[0].text, /1 loose threads from the previous run. Run \/recover/);
     assert.equal(fake.sent.length, 0);
@@ -91,69 +172,116 @@ test("session_start resume and startup hint only; new/reload/fork do nothing", a
   }
 });
 
+test("session_start returns before its read resolves, with no early notification", async t => {
+  const { fake, options, entries } = await setup(t);
+  const scan = deferred<ReturnType<typeof collect>>();
+  createRecoverExtension({ ...options, readSession: () => scan.promise })(fake.pi as any);
+  try {
+    await fake.emit("session_start", { type: "session_start", reason: "resume" });
+    assert.equal(fake.notes.length, 0);
+  } finally { scan.resolve(collect(entries)); await fake.drain(); }
+  assert.equal(fake.notes.length, 1);
+});
+
 test("fresh/finished session starts notify nothing", async t => {
   const { dir, file } = await setup(t, false);
   for (const saved of [undefined, file]) {
     const fake = fakePi(dir, saved);
-    createRecoverExtension({ home: dir })(fake.pi as any);
+    createRecoverExtension({ home: dir, onBackgroundTask: fake.trackBackground })(fake.pi as any);
     await fake.emit("session_start", { type: "session_start", reason: "startup" });
+    await fake.drain();
     assert.equal(fake.notes.length, 0);
   }
 });
 
-test("checkpoint before error persistence includes the error and throttles for five minutes", async t => {
-  const { dir, fake } = await setup(t);
+test("checkpoint before persistence includes only the errorMessage and throttles synchronously", async t => {
+  const { fake, options } = await setup(t);
   let time = Date.parse("2026-01-01T00:00:00Z");
-  const saves: { state: any; options: any }[] = [];
-  createRecoverExtension({ home: dir, now: () => time, probe: noProbe, writeReport: async (state, _probe, options) => {
-    saves.push({ state, options }); return "/example/report.md";
-  } })(fake.pi as any);
-  const event = { type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Usage limit reached" } };
-  await Promise.all([fake.emit("message_end", event), fake.emit("message_end", event)]);
+  const saves: any[] = [];
+  createRecoverExtension({ ...options, now: () => time, writeReport: async state => { saves.push(state); return "/example/report.md"; } })(fake.pi as any);
+  await Promise.all([fake.emit("message_end", limitEvent), fake.emit("message_end", limitEvent)]);
+  await fake.drain();
   time += 299_999;
-  await fake.emit("message_end", event);
+  await fake.emit("message_end", limitEvent);
+  await fake.drain();
   assert.equal(saves.length, 1);
-  assert.equal(saves[0].state.endedOnError, true);
-  assert.equal(saves[0].state.errorText, "Usage limit reached");
+  assert.equal(saves[0].endedOnError, true);
+  assert.equal(saves[0].errorText, "Usage limit reached");
   time += 1;
-  await fake.emit("message_end", event);
+  await fake.emit("message_end", limitEvent);
+  await fake.drain();
   assert.equal(saves.length, 2);
   assert.equal(fake.sent.length, 0);
   assert.equal(fake.notes.length, 0);
 });
 
-test("checkpoint really writes a report, but only for assistant usage/limit errors", async t => {
-  const { dir, fake } = await setup(t);
-  createRecoverExtension({ home: dir, probe: noProbe })(fake.pi as any);
-  for (const message of [{ role: "user", content: "429" }, { role: "assistant", stopReason: "error", errorMessage: "unrelated network error" }, { role: "assistant", stopReason: "stop", content: [] }]) {
-    await fake.emit("message_end", { type: "message_end", message });
-  }
+test("message_end returns before a held probe resolves and suppresses overlapping checkpoints", async t => {
+  const { fake, options } = await setup(t);
+  const entered = deferred(), held = deferred<Awaited<ReturnType<typeof noProbe>>>();
+  let saved = false;
+  createRecoverExtension({ ...options, probe: async () => { entered.resolve(); return held.promise; }, writeReport: async () => { saved = true; return "/report.md"; } })(fake.pi as any);
+  try {
+    await fake.emit("message_end", limitEvent);
+    await entered.promise;
+    assert.equal(saved, false);
+    await fake.emit("message_end", limitEvent);
+  } finally { held.resolve({ repos: [], notes: [] }); await fake.drain(); }
+  assert.equal(saved, true);
+});
+
+test("checkpoint writes a report only for terminal errors whose errorMessage matches limits", async t => {
+  const { dir, fake, options } = await setup(t);
+  createRecoverExtension(options)(fake.pi as any);
+  for (const message of [
+    { role: "user", content: "429" },
+    { role: "assistant", stopReason: "error", errorMessage: "unrelated network error", content: text("HTTP 429") },
+    { role: "assistant", stopReason: "stop", content: text("quota, 429 and rate limit are normal discussion"), errorMessage: "HTTP 429" },
+  ]) await fake.emit("message_end", { type: "message_end", message });
+  await fake.drain();
   assert.deepEqual(await readdir(dir), ["session.jsonl"]);
-  await fake.emit("message_end", { type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "HTTP 429 quota exhausted", content: [] } });
+  await fake.emit("message_end", limitEvent);
+  await fake.drain();
   const roots = await readdir(join(dir, ".ai-work", "recover"));
   assert.equal(roots.length, 1);
-  assert.match(await readFile(join(dir, ".ai-work", "recover", roots[0], "report.md"), "utf8"), /HTTP 429 quota exhausted/);
+  assert.match(await readFile(join(dir, ".ai-work", "recover", roots[0], "report.md"), "utf8"), /Usage limit reached/);
   assert.equal(fake.sent.length, 0);
   assert.equal(fake.notes.length, 0);
 });
 
-test("all handlers contain failures, including missing session files and throwing UI", async t => {
+test("checkpoints also protect new live work", async t => {
+  const { fake, options } = await setup(t, false);
+  const saves: any[] = [];
+  createRecoverExtension({ ...options, writeReport: async state => { saves.push(state); return "/report.md"; } })(fake.pi as any);
+  await fake.emit("session_start", { type: "session_start", reason: "new" });
+  fake.persist(call("job_watch", "live", { check: "true" }));
+  fake.persist(result("job_watch", "live", "Started watch j1"));
+  await fake.emit("message_end", limitEvent);
+  await fake.drain();
+  assert.equal(saves[0].threads[0].state, "live");
+});
+
+test("all handlers contain failures, including detached rejection and throwing UI", async t => {
   const dir = tempDir(t), fake = fakePi(dir, join(dir, "missing.jsonl"));
-  createRecoverExtension({ home: dir, probe: noProbe })(fake.pi as any);
+  createRecoverExtension({ home: dir, probe: noProbe, onBackgroundTask: fake.trackBackground })(fake.pi as any);
   await fake.command();
   assert.match(fake.notes[0].text, /Recovery failed/);
   await fake.emit("session_start", { type: "session_start", reason: "resume" });
-  await fake.emit("message_end", { type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "quota exhausted" } });
+  await fake.emit("message_end", limitEvent);
+  await fake.drain();
   fake.ctx.ui.notify = () => { throw new Error("UI gone"); };
   await assert.doesNotReject(fake.command());
 });
 
-test("report failures never inject a recovery message", async t => {
-  const { dir, fake } = await setup(t);
-  createRecoverExtension({ home: dir, probe: noProbe, writeReport: async () => { throw new Error("Disk full"); } })(fake.pi as any);
-  await fake.command();
-  assert.equal(fake.sent.length, 0);
-  assert.match(fake.notes[0].text, /Disk full/);
+test("report/send failures never append a recovered marker", async t => {
+  for (const failure of ["report", "send"]) {
+    const { fake, options } = await setup(t);
+    if (failure === "send") fake.pi.sendUserMessage = () => { throw new Error("Session gone"); };
+    createRecoverExtension(failure === "report" ? { ...options, writeReport: async () => { throw new Error("Disk full"); } } : options)(fake.pi as any);
+    await fake.command();
+    assert.equal(fake.appended.length, 0);
+    assert.equal(fake.sent.length, 0);
+    assert.equal(fake.notes.at(-1)!.level, "error");
+  }
 });
 
 test("streaming reader skips malformed/truncated lines, handles a missing newline", async t => {

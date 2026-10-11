@@ -50,7 +50,10 @@ export async function resolveSession(target: string | undefined, currentFile: st
     const id = file.slice(file.lastIndexOf("_") + 1, -6);
     return id.startsWith(target);
   });
-  if (candidates.length > 1) throw new Error(`Ambiguous session id prefix ${target}:\n${candidates.join("\n")}`);
+  if (candidates.length > 1) {
+    const more = candidates.length > 10 ? `\nand ${candidates.length - 10} more` : "";
+    throw new Error(`Ambiguous session id prefix ${target}:\n${candidates.slice(0, 10).join("\n")}${more}`);
+  }
   if (!candidates.length) throw new Error(`No session matches id prefix ${target}.`);
   return candidates[0];
 }
