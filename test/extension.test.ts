@@ -364,3 +364,34 @@ test("a turn cut off by a provider error with only unacted results still recover
   assert.match(fake.sent[0].text, /No background work needs relaunching/);
   assert.match(fake.sent[0].text, /Ship PR-B/);
 });
+
+test("external provider-error recovery stops re-offering once the recovery prompt was answered successfully", async t => {
+  const dir = tempDir(t), file = join(dir, "old.jsonl");
+  const entries: unknown[] = [session(dir, "old-session"), { type: "message", message: { role: "user", content: text("Ship it") } },
+    call("Agent", "a", { description: "PR", prompt: "Do it" }), result("Agent", "a", "Agent ID: agent-x"),
+    { type: "message", message: { role: "assistant", content: text("waiting"), stopReason: "stop" } },
+    { type: "custom", customType: "subagents:record", data: { id: "agent-x", status: "completed", result: "done" } },
+    { type: "message", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "429" } }];
+  await writeFile(file, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+  const fake = fakePi(dir);
+  createRecoverExtension({ home: dir, probe: noProbe, onBackgroundTask: fake.trackBackground })(fake.pi as any);
+  await fake.command(file);
+  assert.equal(fake.sent.length, 1);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  // Recovery reply failed again: still offered.
+  fake.persist({ type: "message", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "429" } });
+  await fake.command(file);
+  assert.equal(fake.sent.length, 2);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  // A successful reply to the recovery prompt acknowledges it.
+  fake.persist({ type: "message", message: { role: "assistant", content: text("recovered"), stopReason: "stop" } });
+  await fake.command(file);
+  assert.equal(fake.sent.length, 2);
+  assert.match(fake.notes.at(-1)!.text, /^nothing to recover/);
+});
+
+test("a workflow-id record is not mistaken for an agent completion", () => {
+  const state = collect([call("SubagentWorkflow", "w"), result("SubagentWorkflow", "w", "Task ID: wf_x"),
+    { type: "custom", customType: "subagents:record", data: { id: "wf_x", status: "error" } }]);
+  assert.equal(state.threads[0].state, "failed");
+});

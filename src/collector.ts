@@ -102,6 +102,10 @@ function applyResult(thread: Thread, message: ObjectData, index: number): void {
   if (message.isError === true) finish(thread, "error", `Tool failed: ${text.slice(0, 400)}`);
 }
 
+function decodeXml(text: string): string {
+  return text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+}
+
 function notificationCompletions(entry: ObjectData, index: number): Completion[] {
   const text = contentText(entry.content);
   // Grouped notifications contain several task-notification blocks.
@@ -112,7 +116,7 @@ function notificationCompletions(entry: ObjectData, index: number): Completion[]
       kind: id.startsWith("wf_") ? "workflow" as const : "agent" as const,
       id, index, status: match[1].match(/<status>([^<]*)<\/status>/)?.[1] || "notification",
       callId: match[1].match(/<tool-use-id>([^<]+)<\/tool-use-id>/)?.[1],
-      result: match[1].match(/<result>([\s\S]*?)<\/result>/)?.[1]?.slice(0, 20000),
+      result: decodeXml(match[1].match(/<result>([\s\S]*?)<\/result>/)?.[1] ?? "").slice(0, 20000) || undefined,
     }];
   });
 }
@@ -183,7 +187,8 @@ export class Collector {
     } else if (entry.type === "custom" && entry.customType === "subagents:record") {
       const data = object(entry.data);
       if (AGENT_TERMINAL.has(string(data.status))) this.completions.push({
-        kind: "agent", id: string(data.id), index, status: string(data.status),
+        // pi-subagents records only top-level agents today; route workflow ids defensively.
+        kind: string(data.id).startsWith("wf_") || data.kind === "workflow" ? "workflow" : "agent", id: string(data.id), index, status: string(data.status),
         result: typeof data.result === "string" ? data.result.slice(0, 20000) : undefined,
       });
     } else if (entry.type === "custom_message" && entry.customType === "subagent-notification") {
@@ -239,7 +244,8 @@ export class Collector {
       if (thread && thread.resultIndex !== undefined) {
         finish(thread, completion.status, `Later ${completion.kind} completion recorded: ${completion.status.slice(0, 300)}`);
         thread.completionIndex = completion.index;
-        if (completion.result) thread.resultText = completion.result;
+        // Records carry the full result; notifications carry a preview. Keep the longer one.
+        if (completion.result && completion.result.length > (thread.resultText?.length ?? 0)) thread.resultText = completion.result;
         if (completion.kind !== "job" && AGENT_FAILURE.test(completion.status)) {
           thread.state = "failed";
           thread.evidence = `Ended without finishing: ${completion.status.slice(0, 300)}`;

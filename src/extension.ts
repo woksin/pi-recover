@@ -7,7 +7,34 @@ import { RECOVERED_TYPE, recoveryReportPath } from "./markers.ts";
 import { probe } from "./probe.ts";
 import { recoveryPrompt, writeReport } from "./report.ts";
 import { parseArguments, readSession, resolveSession } from "./sessions.ts";
-import { looseThreads, needsResume, protectLiveThreads, unactedResults } from "./types.ts";
+import { looseThreads, needsResume, protectLiveThreads, unactedResults, type RecoveryState } from "./types.ts";
+
+/**
+ * External-file recovery: the source session is dead and never changes, so its provider-error
+ * ending and unacted results would be offered forever. Treat them as handled once, in the current
+ * session, a delivered recovery prompt for that source file was followed by a successful reply.
+ */
+export function externalResumeAcknowledged(entries: readonly any[], sourceFile: string): boolean {
+  const reports = new Set<string>();
+  let awaitingReply = false;
+  for (const entry of entries) {
+    if (entry?.type === "custom" && entry.customType === RECOVERED_TYPE && entry.data?.sourceFile === sourceFile && typeof entry.data?.reportPath === "string") {
+      reports.add(entry.data.reportPath);
+    } else if (entry?.type === "message" && entry.message?.role === "user") {
+      const path = recoveryReportPath(contentText(entry.message.content));
+      if (path && reports.has(path)) awaitingReply = true;
+    } else if (awaitingReply && entry?.type === "message" && entry.message?.role === "assistant"
+      && entry.message.stopReason !== "error" && entry.message.stopReason !== "aborted") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function clearResume(state: RecoveryState): void {
+  state.endedOnProviderError = false;
+  for (const thread of state.threads) thread.unacted = false;
+}
 
 export interface RecoverOptions {
   home?: string;
@@ -67,6 +94,7 @@ export function createRecoverExtension(options: RecoverOptions = {}) {
           const isCurrent = currentFile && await realpath(file) === await realpath(currentFile);
           const state = await load(file, isCurrent ? [] : markers);
           if (isCurrent) protectLiveThreads(state, boundary);
+          else if (externalResumeAcknowledged(ctx.sessionManager.getEntries(), await realpath(file))) clearResume(state);
           const loose = looseThreads(state);
           const live = state.threads.filter(thread => thread.state === "live").length;
           const superseded = state.threads.filter(thread => thread.state === "superseded").length;
@@ -80,8 +108,10 @@ export function createRecoverExtension(options: RecoverOptions = {}) {
           const summary = loose.length || resume ? parts.join(", ") : "nothing to recover";
           notify(ctx, `${summary}; ${live} live; ${superseded} superseded; recovery report: ${report}${dry ? " (dry run; no message injected)" : ""}`);
           if (!dry && (loose.length || resume)) {
+            // Resolve before sending: nothing may be awaited between the prompt and its receipt.
+            const sourceFile = await realpath(file);
             pi.sendUserMessage(recoveryPrompt(state, report), { deliverAs: "followUp" });
-            pi.appendEntry(RECOVERED_TYPE, { reportPath: report, callIds: loose.map(thread => thread.callId), at: new Date(now()).toISOString() });
+            pi.appendEntry(RECOVERED_TYPE, { reportPath: report, sourceFile, callIds: loose.map(thread => thread.callId), at: new Date(now()).toISOString() });
           }
         } catch (error) {
           notify(ctx, `Recovery failed: ${(error as Error).message}`, "error");
