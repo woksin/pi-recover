@@ -84,11 +84,10 @@ export function createRecoverExtension(options: RecoverOptions = {}) {
     pi.on("session_start", (event, ctx) => {
       try {
         const sessionId = ctx.sessionManager.getSessionId();
-        if (!boundaries.has(sessionId)) {
-          // On /reload there is no earlier process snapshot. Conservatively protect
-          // existing work as live instead of declaring currently running tasks dead.
-          boundaries.set(sessionId, event.reason === "reload" ? new Set() : boundaryCallIds(ctx));
-        }
+        // Every session_start (including /reload) follows a session_shutdown that aborts
+        // pi-subagents work and kills pi-jobs, so everything already in the file belongs to
+        // a dead runner. Always reset the boundary to the current snapshot.
+        boundaries.set(sessionId, boundaryCallIds(ctx));
         // CLI --continue/--session uses startup; /resume emits resume.
         if (event.reason !== "startup" && event.reason !== "resume") return;
         const file = ctx.sessionManager.getSessionFile();

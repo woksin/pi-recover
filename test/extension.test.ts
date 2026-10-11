@@ -110,13 +110,24 @@ test("live-only current sessions, including an explicit symlink target, write a 
   assert.match(await readFile(reportPath(fake.notes[0].text), "utf8"), /Started in this process/);
 });
 
-test("reload conservatively protects existing threads; no session_start retains prior-run behavior", async t => {
+test("reload kills prior work: existing threads stay loose and are injected", async t => {
   const { fake, options } = await setup(t);
   createRecoverExtension(options)(fake.pi as any);
   await fake.emit("session_start", { type: "session_start", reason: "reload" });
   await fake.command();
-  assert.equal(fake.sent.length, 0);
-  assert.match(fake.notes[0].text, /1 live/);
+  assert.equal(fake.sent.length, 1);
+  assert.match(fake.notes[0].text, /^1 loose thread.*; 0 live/);
+});
+
+test("a second session_start resets the boundary so earlier live work becomes loose", async t => {
+  const { fake, options } = await setup(t);
+  createRecoverExtension(options)(fake.pi as any);
+  await fake.emit("session_start", { type: "session_start", reason: "new" });
+  fake.persist(call("job_start", "live", { command: "true" }));
+  fake.persist(result("job_start", "live", "Started job j1"));
+  await fake.emit("session_start", { type: "session_start", reason: "reload" });
+  await fake.command("--dry");
+  assert.match(fake.notes[0].text, /^2 loose threads; 0 live/);
 });
 
 test("zero threads gives notify only, without probe or files", async t => {
