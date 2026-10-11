@@ -1,8 +1,33 @@
 {
-  "name": "local-pi-recover",
+  "name": "@woksin/pi-recover",
   "version": "0.1.0",
-  "private": true,
-  "description": "Read-only session recovery reports and a /recover command",
+  "description": "Recover unfinished pi subagents, workflows and jobs with deterministic session reports and /recover",
+  "license": "MIT",
+  "author": "woksin",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "recovery",
+    "subagents"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/woksin/pi-recover.git"
+  },
+  "homepage": "https://github.com/woksin/pi-recover#readme",
+  "bugs": {
+    "url": "https://github.com/woksin/pi-recover/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
   "type": "module",
   "scripts": {
     "test": "node --test --test-timeout=30000 'test/*.test.ts'",
@@ -10,9 +35,16 @@
     "typecheck": "node scripts/typecheck.mjs"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=1.0.2"
+    "@earendil-works/pi-coding-agent": "*"
   },
   "pi": {
-    "extensions": ["./src/extension.ts"]
+    "extensions": [
+      "./src/extension.ts"
+    ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
   }
 }

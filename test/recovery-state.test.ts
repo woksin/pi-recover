@@ -7,7 +7,9 @@ import { renderReport, writeReport } from "../src/report.ts";
 import { looseThreads, protectLiveThreads } from "../src/types.ts";
 import { call, result, session, text, tempDir, notification } from "./helpers.ts";
 
-const receipt = (...callIds: unknown[]) => ({ type: "custom", customType: RECOVERED_TYPE, data: { callIds, at: "2026-01-01T00:00:00Z" } });
+const reportPath = "/example/recovery/report.md";
+const receipt = (...callIds: unknown[]) => ({ type: "custom", customType: RECOVERED_TYPE, data: { reportPath, callIds, at: "2026-01-01T00:00:00Z" } });
+const prompt = (path = reportPath) => ({ type: "message", message: { role: "user", content: text(`${RECOVERY_PROMPT_MARKER}\nRecovery report: ${JSON.stringify(path)}\nRecover now`) } });
 
 test("startup identity boundary protects later starts, including interrupted calls, despite malformed lines", () => {
   const state = collect([
@@ -28,7 +30,7 @@ test("no boundary means prior-run behavior; a recovered receipt supersedes all c
     call("Agent", "a"), result("Agent", "a", "Agent ID: agent-1"),
     call("job_start", "j"), result("job_start", "j", "Started job j1"),
     call("SubagentWorkflow", "w"), result("SubagentWorkflow", "w", "Task ID: wf_test"),
-    receipt("a", "j", "w", null, 42),
+    receipt("a", "j", "w", null, 42), prompt(),
     call("job_start", "other-call"), result("job_start", "other-call", "Started job j1"),
   ]);
   protectLiveThreads(state, undefined);
@@ -39,10 +41,33 @@ test("no boundary means prior-run behavior; a recovered receipt supersedes all c
 });
 
 test("receipt remains superseded after a later terminal notification; malformed receipts are ignored", () => {
-  const state = collect([call("Agent", "a"), result("Agent", "a", "Agent ID: agent-1"), receipt("a"), notification("agent-1"),
+  const state = collect([call("Agent", "a"), result("Agent", "a", "Agent ID: agent-1"), receipt("a"), prompt(), notification("agent-1"),
     { type: "custom", customType: RECOVERED_TYPE, data: { callIds: null } }]);
   assert.equal(state.threads[0].state, "superseded");
   assert.equal(looseThreads(state).length, 0);
+});
+
+test("a receipt without its following marked prompt leaves threads loose", () => {
+  for (const after of [[], [prompt("/example/other-report.md")], [
+    { type: "message", message: { role: "assistant", content: text(`${RECOVERY_PROMPT_MARKER}\nRecovery report: ${JSON.stringify(reportPath)}`) } },
+  ]]) {
+    const state = collect([call("Agent", "a"), result("Agent", "a", "Agent ID: agent-1"), receipt("a"), ...after]);
+    assert.deepEqual(looseThreads(state).map(thread => thread.callId), ["a"]);
+  }
+});
+
+test("a prompt before the receipt cannot confirm it; legacy receipts remain loose", () => {
+  const legacy = { type: "custom", customType: RECOVERED_TYPE, data: { callIds: ["a"] } };
+  for (const entries of [[prompt(), receipt("a")], [legacy, prompt()]]) {
+    assert.equal(collect([call("Agent", "a"), ...entries]).threads[0].state, "interrupted");
+  }
+});
+
+test("report path matching is exact and handles spaces, quotes and newlines", () => {
+  const path = '/example/a space/"quoted"\nreport.md';
+  const marker = { type: "custom", customType: RECOVERED_TYPE, data: { reportPath: path, callIds: ["a"] } };
+  assert.equal(collect([call("Agent", "a"), marker, prompt(path)]).threads[0].state, "superseded");
+  assert.equal(collect([call("Agent", "a"), marker, prompt(path + "-other")]).threads[0].state, "interrupted");
 });
 
 test("marked injected recovery prompts are ignored when choosing the last user request", () => {
@@ -84,7 +109,7 @@ test("resumed agents retain the original spawn prompt through multiple resumes, 
 });
 
 test("reports list live and superseded work separately, never as loose thread details", () => {
-  const state = collect([call("Agent", "a", { description: "Superseded agent" }), receipt("a"), call("job_start", "j", { label: "Live job" })]);
+  const state = collect([call("Agent", "a", { description: "Superseded agent" }), receipt("a"), prompt(), call("job_start", "j", { label: "Live job" })]);
   protectLiveThreads(state, new Set());
   const report = renderReport({ state, environment: { repos: [], notes: [] }, promptFiles: new Map(), logTails: new Map() });
   assert.doesNotMatch(report.split("## Live threads")[0], /Superseded agent|Live job/);

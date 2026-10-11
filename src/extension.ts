@@ -2,8 +2,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { assistantError, LIMIT_ERROR } from "./collector.ts";
-import { RECOVERED_TYPE } from "./markers.ts";
+import { assistantError, contentText, LIMIT_ERROR } from "./collector.ts";
+import { RECOVERED_TYPE, recoveryReportPath } from "./markers.ts";
 import { probe } from "./probe.ts";
 import { recoveryPrompt, writeReport } from "./report.ts";
 import { parseArguments, readSession, resolveSession } from "./sessions.ts";
@@ -60,10 +60,13 @@ export function createRecoverExtension(options: RecoverOptions = {}) {
           const currentFile = ctx.sessionManager.getSessionFile();
           const boundary = boundaries.get(ctx.sessionManager.getSessionId());
           // External-file recoveries record their receipt in the current session too.
-          const markers = ctx.sessionManager.getEntries().filter(entry => entry.type === "custom" && entry.customType === RECOVERED_TYPE);
+          const markers = ctx.sessionManager.getEntries().filter(entry =>
+            (entry.type === "custom" && entry.customType === RECOVERED_TYPE) ||
+            (entry.type === "message" && entry.message.role === "user" && recoveryReportPath(contentText(entry.message.content)) !== undefined));
           const file = await resolveSession(target, currentFile, ctx.cwd, sessionsRoot, home);
-          const state = await load(file, markers);
-          if (currentFile && await realpath(file) === await realpath(currentFile)) protectLiveThreads(state, boundary);
+          const isCurrent = currentFile && await realpath(file) === await realpath(currentFile);
+          const state = await load(file, isCurrent ? [] : markers);
+          if (isCurrent) protectLiveThreads(state, boundary);
           const loose = looseThreads(state);
           const live = state.threads.filter(thread => thread.state === "live").length;
           const superseded = state.threads.filter(thread => thread.state === "superseded").length;
@@ -73,7 +76,7 @@ export function createRecoverExtension(options: RecoverOptions = {}) {
           notify(ctx, `${summary}; ${live} live; ${superseded} superseded; recovery report: ${report}${dry ? " (dry run; no message injected)" : ""}`);
           if (!dry && loose.length) {
             pi.sendUserMessage(recoveryPrompt(state, report), { deliverAs: "followUp" });
-            pi.appendEntry(RECOVERED_TYPE, { callIds: loose.map(thread => thread.callId), at: new Date(now()).toISOString() });
+            pi.appendEntry(RECOVERED_TYPE, { reportPath: report, callIds: loose.map(thread => thread.callId), at: new Date(now()).toISOString() });
           }
         } catch (error) {
           notify(ctx, `Recovery failed: ${(error as Error).message}`, "error");

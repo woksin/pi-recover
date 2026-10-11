@@ -1,10 +1,38 @@
 # pi-recover
 
-Recover loose threads after a usage limit, crash, or killed terminal. This local Pi package reads the session JSONL deterministically, saves a recovery report and original agent prompts, and optionally sends **one user message** asking the model to check reality and recover unfinished work.
+Recover loose threads after a usage limit, crash, or killed terminal. This Pi extension reads the session JSONL deterministically, saves a recovery report and original agent prompts, and optionally sends **one user message** asking the model to check reality and recover unfinished work.
 
-## Register
+## Install
 
-After review, add `"./local-packages/pi-recover"` to `packages` in `~/.pi/agent/settings.json`, then restart Pi or `/reload`. The package does not edit settings itself.
+Add the npm source to `packages` in your Pi settings:
+
+```json
+{
+  "packages": ["npm:@woksin/pi-recover"]
+}
+```
+
+Or use `pi install npm:@woksin/pi-recover`. Git and local checkouts work too:
+
+```sh
+pi install git:github.com/woksin/pi-recover
+pi install /path/to/pi-recover
+```
+
+Restart Pi or run `/reload` after changing settings. The extension never edits settings.
+Tested with Pi 1.1.0. The host dependency uses `"*"` as recommended for Pi packages:
+Pi supplies its own runtime and suppresses automatic peer installation for managed packages.
+Other runtime versions are not guaranteed.
+
+## Companion extensions
+
+Works best with `@tintinweb/pi-subagents` and `@woksin/pi-jobs`. It recognizes their
+`Agent`, `SubagentWorkflow`, `job_start`, and `job_watch` session records and completion
+notifications, preserving agent prompts and job log paths. These companions are optional,
+not bundled dependencies. Without them, `/recover --dry` can still inspect sessions that
+contain those historical records, and usage-limit checkpoints still save session context.
+Ordinary built-in tool calls are not tracked as recoverable threads; a session without
+recognized threads reports `nothing to recover`.
 
 ## Usage
 
@@ -35,7 +63,7 @@ If that directory cannot be created, the fallback is `~/.ai-work/recover/`. Repo
 
 - **The extension never relaunches anything.** Relaunch, dropping a thread, workflow resume, or re-watching CI is the model's decision after checking reality.
 - At `session_start`, a synchronous snapshot of existing tool-call IDs records the boundary between prior-run and current-process work. Unfinished calls started after that boundary are `live` and must not be relaunched, including when a usage limit leaves the process and other providers running. Explicit paths to the current file get the same protection. Without a startup boundary, everything is treated as prior-run work. Every `session_start`, including `/reload`, resets the boundary: `/reload` aborts in-process subagents and kills pi-jobs jobs, so work started before it is treated as dead.
-- After injecting, the package appends a `pi-recover:recovered` receipt with the covered call IDs and time. Covered threads become `superseded`, so later recovery commands and continue hints do not repeat them. External-file recovery receipts live in the current session. A fixed marker identifies generated recovery prompts, which do not replace the original last user request.
+- After queuing a recovery prompt, the package appends a `pi-recover:recovered` receipt with the report path, covered call IDs and time. A receipt counts only when a marked user recovery prompt with that exact report path appears **after it** in the session. A crash or dropped queue before delivery leaves threads loose. Confirmed threads become `superseded`, so later commands and continue hints do not repeat them. External-file receipts and their confirming prompts live in the current session. Legacy receipts without a report path are not confirmation. Generated recovery prompts do not replace the original last user request.
 - Resumed agents save both the resume prompt and the original spawn prompt, matched by agent ID when available in the same session, with separate labels. Missing original history is reported, not invented.
 - No network calls, fetch, `gh`, or git state changes occur in the extension. The injected prompt asks the model to check PRs, CI, and issue statuses separately.
 - The probe inspects at most 12 existing repositories, at most 10 seconds per git command, with a 29-second command budget. Upstream refs can be stale; status is capped at 40 lines. Candidate path discovery is heuristic and bounded to 96 paths. Referenced files are not promoted to their parent directories.
@@ -50,14 +78,18 @@ If that directory cannot be created, the fallback is `~/.ai-work/recover/`. Repo
 
 ## Development
 
-Requires a Node version supporting native TypeScript stripping (the same setup as `pi-jobs`). No npm install or build output is needed.
+Requires Node.js 22.19 or newer for native TypeScript stripping. Pi loads the TypeScript
+entry point directly; there is no compiled build output. Development dependencies include
+TypeScript 5.9.3 and Pi 1.1.0 declarations; they are not included in the published package.
 
 ```sh
+npm ci --ignore-scripts
 npm test
 npm run scan             # read-only, 20 most recently modified real session files
-npm run typecheck        # existing tsc on PATH; no installation
-# Or: PI_RECOVER_TSC=/path/to/existing/typescript/bin/tsc npm run typecheck
+npm run typecheck        # local TypeScript devDependency
+# Optional: PI_RECOVER_TSC=/path/to/typescript/bin/tsc npm run typecheck
 pi --no-session -e ./src/extension.ts --help
 ```
 
-Tests use only synthetic session fixtures, fake Pi APIs, bounded local git probes, and test-owned temporary directories. The scan prints counts only, including normal messages previously misclassified as errors, never private session text. Typechecking uses the installed host declarations under `../../npm/node_modules/@earendil-works/pi-coding-agent`; no dependencies or compiled output are created. There is no remote repository, application build, or CI/integration lane for this local package; `npm test` plus the available typecheck are the local gates.
+Tests use only synthetic session fixtures, fake Pi APIs, bounded local git probes, and test-owned temporary directories. The scan prints counts only, including normal messages previously misclassified as errors, never private session text. Typechecking resolves the local devDependencies, without relying on the host's installation
+layout. `npm test` and `npm run typecheck` are the local gates; neither calls a model.

@@ -1,5 +1,5 @@
 import type { RecoveryState, Thread } from "./types.ts";
-import { RECOVERED_TYPE, RECOVERY_PROMPT_MARKER } from "./markers.ts";
+import { RECOVERED_TYPE, RECOVERY_PROMPT_MARKER, recoveryReportPath } from "./markers.ts";
 
 export const LIMIT_ERROR = /usage[\s_-]*limit|rate[\s_-]*limit|quota|\b429\b|overloaded/i;
 // "steered" is deliberately non-terminal: steering does not finish an agent.
@@ -147,6 +147,7 @@ export class Collector {
   private kills = new Map<string, string>();
   private completions: Completion[] = [];
   private recovered = new Set<string>();
+  private pendingReceipts = new Map<string, string[]>();
   private index = 0;
 
   add(input: unknown): void {
@@ -169,9 +170,11 @@ export class Collector {
     } else if (entry.type === "message") {
       this.message(object(entry.message), index);
     } else if (entry.type === "custom" && entry.customType === RECOVERED_TYPE) {
-      const callIds = object(entry.data).callIds;
-      for (const id of Array.isArray(callIds) ? callIds : []) {
-        if (typeof id === "string") this.recovered.add(id);
+      const data = object(entry.data);
+      const reportPath = string(data.reportPath);
+      if (reportPath && Array.isArray(data.callIds)) {
+        const ids = data.callIds.filter((id): id is string => typeof id === "string");
+        this.pendingReceipts.set(reportPath, [...this.pendingReceipts.get(reportPath) ?? [], ...ids]);
       }
     } else if (entry.type === "custom" && entry.customType === "subagents:record") {
       const data = object(entry.data);
@@ -189,6 +192,11 @@ export class Collector {
     if (message.role === "user") {
       const text = contentText(message.content);
       if (!text.startsWith(RECOVERY_PROMPT_MARKER + "\n")) this.state.lastUserRequest = text.slice(0, 1500);
+      const reportPath = recoveryReportPath(text);
+      if (reportPath) {
+        for (const id of this.pendingReceipts.get(reportPath) ?? []) this.recovered.add(id);
+        this.pendingReceipts.delete(reportPath);
+      }
     }
     if (message.role === "assistant") {
       const text = contentText(message.content);

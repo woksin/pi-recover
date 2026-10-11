@@ -50,6 +50,7 @@ test("default injects exactly one marked prompt then records the covered call ID
   assert.match(await readFile(report, "utf8"), /Recover me/);
   assert.equal(fake.appended[0].customType, RECOVERED_TYPE);
   assert.deepEqual(fake.appended[0].data.callIds, ["a"]);
+  assert.equal(fake.appended[0].data.reportPath, report);
   assert.ok(!Number.isNaN(Date.parse(fake.appended[0].data.at)));
 });
 
@@ -69,6 +70,30 @@ test("later /recover and a new --continue hint exclude superseded work and prese
   await continued.emit("session_start", { type: "session_start", reason: "startup" });
   await continued.drain();
   assert.equal(continued.notes.length, 0);
+});
+
+test("a queued prompt lost before delivery leaves work recoverable, including external files", async t => {
+  for (const external of [false, true]) {
+    const { dir, file, fake: current, options } = await setup(t);
+    const fake = external ? fakePi(dir) : current;
+    fake.pi.sendUserMessage = (value, sendOptions) => { fake.sent.push({ text: value, options: sendOptions }); };
+    createRecoverExtension({ ...options, onBackgroundTask: fake.trackBackground })(fake.pi as any);
+    await fake.command(external ? file : "");
+    await fake.command(external ? file : "");
+    assert.equal(fake.sent.length, 2);
+    assert.equal(fake.appended.length, 2);
+    assert.match(fake.notes[1].text, /^1 loose threads; 0 live; 0 superseded/);
+    assert.equal((await readSession(file)).threads[0].state, "unfinished");
+  }
+});
+
+test("a current-file prompt preceding its receipt is not confirmed by duplicate extra entries", async t => {
+  const { fake, options } = await setup(t);
+  fake.persist({ type: "message", message: { role: "user", content: `${RECOVERY_PROMPT_MARKER}\nRecovery report: "/example/report.md"` } });
+  fake.persist({ type: "custom", customType: RECOVERED_TYPE, data: { reportPath: "/example/report.md", callIds: ["a"] } });
+  createRecoverExtension(options)(fake.pi as any);
+  await fake.command("--dry");
+  assert.match(fake.notes[0].text, /^1 loose threads; 0 live; 0 superseded/);
 });
 
 test("live agents, jobs and workflows are separate and excluded from injection and markers", async t => {

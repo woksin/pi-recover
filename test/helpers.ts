@@ -55,7 +55,8 @@ export function fakePi(cwd: string, file?: string) {
     on: (name: string, handler: any) => handlers.set(name, [...handlers.get(name) ?? [], handler]),
     sendUserMessage: (value: string, options: unknown) => {
       sent.push({ text: value, options });
-      persist({ type: "message", message: { role: "user", content: text(value) } });
+      // Pi prepares/queues user prompts asynchronously; receipts persist first.
+      queueMicrotask(() => persist({ type: "message", message: { role: "user", content: text(value) } }));
     },
     appendEntry: (customType: string, data: unknown) => {
       appended.push({ customType, data });
