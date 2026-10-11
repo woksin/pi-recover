@@ -34,6 +34,7 @@ interface Completion {
   callId?: string;
   logPath?: string;
   startedAt?: number;
+  result?: string;
 }
 
 function initialThread(call: ObjectData, index: number): Thread | undefined {
@@ -111,6 +112,7 @@ function notificationCompletions(entry: ObjectData, index: number): Completion[]
       kind: id.startsWith("wf_") ? "workflow" as const : "agent" as const,
       id, index, status: match[1].match(/<status>([^<]*)<\/status>/)?.[1] || "notification",
       callId: match[1].match(/<tool-use-id>([^<]+)<\/tool-use-id>/)?.[1],
+      result: match[1].match(/<result>([\s\S]*?)<\/result>/)?.[1]?.slice(0, 20000),
     }];
   });
 }
@@ -143,7 +145,7 @@ function matches(thread: Thread, completion: Completion): boolean {
 export class Collector {
   private state: RecoveryState = {
     sessionId: "unknown", cwd: "", lastUserRequest: "", lastAssistantText: "",
-    endedOnError: false, errorText: "", malformedLines: 0, threads: [], scheduled: [],
+    endedOnError: false, endedOnProviderError: false, lastReplyIndex: -1, errorText: "", malformedLines: 0, threads: [], scheduled: [],
   };
   private calls = new Map<string, Thread>();
   private kills = new Map<string, string>();
@@ -182,6 +184,7 @@ export class Collector {
       const data = object(entry.data);
       if (AGENT_TERMINAL.has(string(data.status))) this.completions.push({
         kind: "agent", id: string(data.id), index, status: string(data.status),
+        result: typeof data.result === "string" ? data.result.slice(0, 20000) : undefined,
       });
     } else if (entry.type === "custom_message" && entry.customType === "subagent-notification") {
       this.completions.push(...notificationCompletions(entry, index));
@@ -205,6 +208,8 @@ export class Collector {
       if (text) this.state.lastAssistantText = text;
       this.state.errorText = assistantError(message);
       this.state.endedOnError = message.stopReason === "error" || message.stopReason === "aborted";
+      this.state.endedOnProviderError = message.stopReason === "error";
+      if (!this.state.endedOnError) this.state.lastReplyIndex = index;
       for (const item of Array.isArray(message.content) ? message.content : []) {
         const call = object(item);
         if (call.type !== "toolCall") continue;
@@ -233,6 +238,8 @@ export class Collector {
       const thread = this.state.threads.findLast(candidate => matches(candidate, completion));
       if (thread && thread.resultIndex !== undefined) {
         finish(thread, completion.status, `Later ${completion.kind} completion recorded: ${completion.status.slice(0, 300)}`);
+        thread.completionIndex = completion.index;
+        if (completion.result) thread.resultText = completion.result;
         if (completion.kind !== "job" && AGENT_FAILURE.test(completion.status)) {
           thread.state = "failed";
           thread.evidence = `Ended without finishing: ${completion.status.slice(0, 300)}`;
@@ -240,6 +247,7 @@ export class Collector {
       }
     }
     for (const thread of this.state.threads) {
+      if (thread.completionIndex !== undefined && thread.completionIndex > this.state.lastReplyIndex) thread.unacted = true;
       if (thread.kind === "agent" && thread.resume) {
         const original = this.state.threads.find(candidate => candidate.kind === "agent" && !candidate.resume && candidate.startIndex < thread.startIndex && candidate.id !== undefined && (candidate.id === thread.resume || candidate.id === thread.id));
         if (original) {

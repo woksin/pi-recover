@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { collect, assistantError } from "../src/collector.ts";
-import { looseThreads, protectLiveThreads } from "../src/types.ts";
+import { looseThreads, needsResume, protectLiveThreads, unactedResults } from "../src/types.ts";
 import { RECOVERED_TYPE, RECOVERY_PROMPT_MARKER } from "../src/markers.ts";
 import { call, result, session, notification, jobCompletion, text } from "./helpers.ts";
 
@@ -207,4 +207,30 @@ test("error-ending detection uses the final assistant, not any past error", () =
     { type: "message", message: { role: "assistant", stopReason: "stop", content: text("Recovered") } }]);
   assert.equal(state.endedOnError, false);
   assert.equal(state.errorText, "");
+});
+
+test("results that arrive after the last successful reply are unacted; a provider-error ending needs resume, a user abort does not", () => {
+  const ok = (content = "ok") => ({ type: "message", message: { role: "assistant", content: text(content), stopReason: "stop" } });
+  const failed = { type: "message", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "429 rate_limit_error" } };
+  const state = collect([
+    session(),
+    call("Agent", "a1", agentArgs), agentResult("a1", "agent-1"), notification("agent-1", "Done", "a1"),
+    ok("handled agent-1"),
+    call("Agent", "a2", agentArgs), agentResult("a2", "agent-2"),
+    call("job_watch", "w1", { check: "true" }), result("job_watch", "w1", "Started watch j7\nlog: /example/j7.log"),
+    ok("waiting"),
+    jobCompletion("j7", "matched"), failed,
+    { type: "custom", customType: "subagents:record", data: { id: "agent-2", status: "completed", result: "PR-B is ready" } },
+    notification("agent-2", "Done", "a2"), failed,
+  ]);
+  assert.deepEqual(state.threads.map(t => [t.state, !!t.unacted]), [["finished", false], ["finished", true], ["finished", true]]);
+  assert.equal(state.threads[1].resultText, "PR-B is ready");
+  assert.equal(looseThreads(state).length, 0);
+  assert.equal(needsResume(state), true);
+  assert.deepEqual(unactedResults(state).map(t => t.callId), ["a2", "w1"]);
+
+  const aborted = collect([session(), ok(), { type: "message", message: { role: "assistant", content: [], stopReason: "aborted", errorMessage: "Request was aborted" } }]);
+  assert.equal(needsResume(aborted), false);
+  const recovered = collect([session(), call("Agent", "a1", agentArgs), agentResult("a1", "agent-1"), notification("agent-1", "Done", "a1"), failed, ok("recovered")]);
+  assert.equal(needsResume(recovered), false);
 });

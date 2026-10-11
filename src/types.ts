@@ -33,6 +33,12 @@ export interface Thread {
   script?: string;
   workflowArgs?: unknown;
   resumeFromRunId?: string;
+  /** Entry index of the completion that finished this thread. */
+  completionIndex?: number;
+  /** Result text carried by the completion (subagent result), if any. */
+  resultText?: string;
+  /** The completion arrived after the last successful assistant reply: nobody acted on it. */
+  unacted?: boolean;
 }
 
 export interface RecoveryState {
@@ -43,6 +49,10 @@ export interface RecoveryState {
   lastUserRequest: string;
   lastAssistantText: string;
   endedOnError: boolean;
+  /** The last assistant message failed with a provider error (not a user abort): the turn was cut off. */
+  endedOnProviderError: boolean;
+  /** Entry index of the last assistant message that did not fail. */
+  lastReplyIndex: number;
   errorText: string;
   malformedLines: number;
   threads: Thread[];
@@ -66,6 +76,16 @@ export interface ProbeResult {
 
 export function looseThreads(state: RecoveryState): Thread[] {
   return state.threads.filter(thread => thread.state === "unfinished" || thread.state === "interrupted" || thread.state === "failed");
+}
+
+/** Finished threads whose results arrived after the last successful reply. */
+export function unactedResults(state: RecoveryState): Thread[] {
+  return state.threads.filter(thread => thread.unacted && thread.state === "finished");
+}
+
+/** The session was cut off mid-turn, or results are waiting that nobody acted on. */
+export function needsResume(state: RecoveryState): boolean {
+  return state.endedOnProviderError || unactedResults(state).length > 0;
 }
 
 /** A startup snapshot of call IDs avoids JSONL/header/malformed-line index mismatches. */

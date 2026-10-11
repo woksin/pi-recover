@@ -344,3 +344,23 @@ test("argument parsing and session resolution accept quoted paths and unique id 
   assert.throws(() => parseArguments("--unknown"), /Usage/);
   assert.throws(() => parseArguments("two targets"), /Usage/);
 });
+
+test("a turn cut off by a provider error with only unacted results still recovers: report lists the results, prompt resumes", async t => {
+  const dir = tempDir(t), file = join(dir, "session.jsonl");
+  const entries: unknown[] = [session(dir), { type: "message", message: { role: "user", content: text("Ship PR-B") } },
+    call("Agent", "a", { description: "PR-B", prompt: "Do PR-B" }), result("Agent", "a", "Agent ID: agent-b\nOutput file: /example/b.output"),
+    { type: "message", message: { role: "assistant", content: text("waiting"), stopReason: "stop" } },
+    { type: "custom", customType: "subagents:record", data: { id: "agent-b", status: "completed", result: "PR-B result text" } },
+    { type: "message", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "429 rate_limit_error" } }];
+  await writeFile(file, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+  const fake = fakePi(dir, file);
+  createRecoverExtension({ home: dir, probe: noProbe, onBackgroundTask: fake.trackBackground })(fake.pi as any);
+  await fake.command();
+  assert.match(fake.notes[0].text, /^no loose threads, turn cut off by a provider error, 1 results not acted on/);
+  const report = await readFile(reportPath(fake.notes[0].text), "utf8");
+  assert.match(report, /## Results not acted on[\s\S]*agent-b[\s\S]*Result text: .*results\/1-pr-b\.md/);
+  assert.equal(fake.sent.length, 1);
+  assert.match(fake.sent[0].text, /never acted on/);
+  assert.match(fake.sent[0].text, /No background work needs relaunching/);
+  assert.match(fake.sent[0].text, /Ship PR-B/);
+});

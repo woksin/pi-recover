@@ -7,7 +7,7 @@ import { RECOVERED_TYPE, recoveryReportPath } from "./markers.ts";
 import { probe } from "./probe.ts";
 import { recoveryPrompt, writeReport } from "./report.ts";
 import { parseArguments, readSession, resolveSession } from "./sessions.ts";
-import { looseThreads, protectLiveThreads } from "./types.ts";
+import { looseThreads, needsResume, protectLiveThreads, unactedResults } from "./types.ts";
 
 export interface RecoverOptions {
   home?: string;
@@ -70,11 +70,16 @@ export function createRecoverExtension(options: RecoverOptions = {}) {
           const loose = looseThreads(state);
           const live = state.threads.filter(thread => thread.state === "live").length;
           const superseded = state.threads.filter(thread => thread.state === "superseded").length;
-          if (!loose.length && !live && !superseded) { notify(ctx, "nothing to recover"); return; }
+          const unacted = unactedResults(state).length;
+          const resume = needsResume(state);
+          if (!loose.length && !live && !superseded && !resume) { notify(ctx, "nothing to recover"); return; }
           const report = await save(state, await inspect(state), { home, sourceFile: file, now: new Date(now()) });
-          const summary = loose.length ? `${loose.length} loose threads` : "nothing to recover";
+          const parts = [loose.length ? `${loose.length} loose threads` : "no loose threads"];
+          if (state.endedOnProviderError) parts.push("turn cut off by a provider error");
+          if (unacted) parts.push(`${unacted} results not acted on`);
+          const summary = loose.length || resume ? parts.join(", ") : "nothing to recover";
           notify(ctx, `${summary}; ${live} live; ${superseded} superseded; recovery report: ${report}${dry ? " (dry run; no message injected)" : ""}`);
-          if (!dry && loose.length) {
+          if (!dry && (loose.length || resume)) {
             pi.sendUserMessage(recoveryPrompt(state, report), { deliverAs: "followUp" });
             pi.appendEntry(RECOVERED_TYPE, { reportPath: report, callIds: loose.map(thread => thread.callId), at: new Date(now()).toISOString() });
           }
@@ -101,6 +106,7 @@ export function createRecoverExtension(options: RecoverOptions = {}) {
           protectLiveThreads(state, boundary);
           const count = looseThreads(state).length;
           if (count) notify(ctx, `${count} loose threads from the previous run. Run /recover.`);
+          else if (needsResume(state)) notify(ctx, "The previous run was cut off mid-turn. Run /recover to resume it.");
         });
       } catch { /* Startup hints are best effort; no writes or injection. */ }
     });
