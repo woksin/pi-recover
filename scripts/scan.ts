@@ -12,7 +12,7 @@ const root = process.argv[2] ?? join(homedir(), ".pi", "agent", "sessions");
 const files = await sessionFiles(root);
 const dated = await Promise.all(files.map(async file => ({ file, modified: (await stat(file)).mtimeMs })));
 const recent = dated.sort((a, b) => b.modified - a.modified).slice(0, 20);
-const states = ["finished", "unfinished", "interrupted", "live", "superseded"];
+const states = ["finished", "failed", "unfinished", "interrupted", "live", "superseded"];
 const totals = { agent: states.map(() => 0), job: states.map(() => 0), workflow: states.map(() => 0), scheduled: 0, malformed: 0, normalMessagesPreviouslyFlagged: 0 };
 console.log(`Counts per kind: ${states.join("/")}`);
 for (const { file } of recent) {

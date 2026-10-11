@@ -28,12 +28,27 @@ test("agents: terminal record, unfinished background default, interrupted, foreg
   assert.equal(state.threads[4].resume, "agent-1");
 });
 
-test("every terminal agent record finishes a background agent; running/steered do not", () => {
-  for (const status of ["completed", "error", "aborted", "stopped", "running", "queued", "steered"]) {
+test("completed records finish an agent; error/aborted/stopped are failed and loose; running/steered stay unfinished", () => {
+  const expected: Record<string, string> = { completed: "finished", error: "failed", aborted: "failed", stopped: "failed", running: "unfinished", queued: "unfinished", steered: "unfinished" };
+  for (const [status, want] of Object.entries(expected)) {
     const state = collect([call("Agent", "a1"), agentResult("a1", "agent-1"),
       { type: "custom", customType: "subagents:record", data: { id: "agent-1", status } }]);
-    assert.equal(state.threads[0].state, ["running", "queued", "steered"].includes(status) ? "unfinished" : "finished");
+    assert.equal(state.threads[0].state, want, status);
+    assert.equal(looseThreads(state).length, want === "finished" ? 0 : 1, status);
   }
+});
+
+test("a subagent killed by a 429 (error record plus Error notification) is a failed, loose thread that is never protected as live", () => {
+  const state = collect([
+    call("Agent", "a1", agentArgs), agentResult("a1", "agent-1"),
+    { type: "custom", customType: "subagents:record", data: { id: "agent-1", status: "error", result: "partial" } },
+    notification("agent-1", 'Error: 429 {"type":"error","error":{"type":"rate_limit_error"}}', "a1"),
+    call("Agent", "a2", agentArgs), agentResult("a2", "agent-2"), notification("agent-2", "Done", "a2"),
+  ]);
+  assert.deepEqual(state.threads.map(t => t.state), ["failed", "finished"]);
+  assert.match(state.threads[0].evidence, /rate_limit_error/);
+  protectLiveThreads(state, new Set());
+  assert.deepEqual(looseThreads(state).map(t => t.callId), ["a1"]);
 });
 
 test("grouped subagent notifications finish their matching task; early notification is supported", () => {
@@ -42,7 +57,7 @@ test("grouped subagent notifications finish their matching task; early notificat
     { type: "custom_message", customType: "subagent-notification", content: `${notification("agent-1").content}\n${notification("agent-2", "Error: synthetic failure").content}` },
     agentResult("a1", "agent-1"), agentResult("a2", "agent-2"),
   ]);
-  assert.deepEqual(state.threads.map(t => t.state), ["finished", "finished"]);
+  assert.deepEqual(state.threads.map(t => t.state), ["finished", "failed"]);
   assert.equal(state.threads[1].status, "Error: synthetic failure");
 });
 
@@ -151,9 +166,9 @@ test("workflows: finished notification, unfinished, interrupted, script/name/arg
   assert.equal(state.threads[2].script, "return 1;");
 });
 
-test("stopped and error workflow notifications are terminal, synchronous errors are not restartable", () => {
+test("stopped and error workflow notifications are failed (loose), synchronous errors are not restartable", () => {
   for (const status of ["Stopped", "Error: synthetic failure"]) {
-    assert.equal(collect([call("SubagentWorkflow", "w"), result("SubagentWorkflow", "w", "Task ID: wf_test"), notification("wf_test", status)]).threads[0].state, "finished");
+    assert.equal(collect([call("SubagentWorkflow", "w"), result("SubagentWorkflow", "w", "Task ID: wf_test"), notification("wf_test", status)]).threads[0].state, "failed");
   }
   const rejected = result("Agent", "a", "Rejected input");
   Object.assign(rejected.message, { isError: true });

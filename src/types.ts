@@ -1,4 +1,4 @@
-export type ThreadState = "finished" | "unfinished" | "interrupted" | "live" | "superseded";
+export type ThreadState = "finished" | "failed" | "unfinished" | "interrupted" | "live" | "superseded";
 
 export interface Thread {
   kind: "agent" | "job" | "workflow";
@@ -65,14 +65,15 @@ export interface ProbeResult {
 }
 
 export function looseThreads(state: RecoveryState): Thread[] {
-  return state.threads.filter(thread => thread.state === "unfinished" || thread.state === "interrupted");
+  return state.threads.filter(thread => thread.state === "unfinished" || thread.state === "interrupted" || thread.state === "failed");
 }
 
 /** A startup snapshot of call IDs avoids JSONL/header/malformed-line index mismatches. */
 export function protectLiveThreads(state: RecoveryState, priorCallIds: ReadonlySet<string> | undefined): void {
   if (!priorCallIds) return;
   for (const thread of looseThreads(state)) {
-    if (priorCallIds.has(thread.callId)) continue;
+    // A failed thread has stopped; it cannot still be running in this process.
+    if (thread.state === "failed" || priorCallIds.has(thread.callId)) continue;
     thread.state = "live";
     thread.evidence = "Started in this process; may still be running. Do not relaunch.";
   }

@@ -4,6 +4,8 @@ import { RECOVERED_TYPE, RECOVERY_PROMPT_MARKER, recoveryReportPath } from "./ma
 export const LIMIT_ERROR = /usage[\s_-]*limit|rate[\s_-]*limit|quota|\b429\b|overloaded/i;
 // "steered" is deliberately non-terminal: steering does not finish an agent.
 const AGENT_TERMINAL = new Set(["completed", "error", "aborted", "stopped"]);
+/** Agent/workflow completions that ended without finishing the work (e.g. a 429 or an abort on /reload). */
+export const AGENT_FAILURE = /^\s*(?:error|aborted|stopped|failed|cancell?ed)\b/i;
 const JOB_TERMINAL = new Set(["succeeded", "failed", "timed_out", "timed out", "timed-out", "killed", "matched"]);
 
 type ObjectData = Record<string, unknown>;
@@ -229,7 +231,13 @@ export class Collector {
     for (const completion of this.completions) {
       // Latest eligible start only: jN can be reused after a process restart.
       const thread = this.state.threads.findLast(candidate => matches(candidate, completion));
-      if (thread && thread.resultIndex !== undefined) finish(thread, completion.status, `Later ${completion.kind} completion recorded: ${completion.status}`);
+      if (thread && thread.resultIndex !== undefined) {
+        finish(thread, completion.status, `Later ${completion.kind} completion recorded: ${completion.status.slice(0, 300)}`);
+        if (completion.kind !== "job" && AGENT_FAILURE.test(completion.status)) {
+          thread.state = "failed";
+          thread.evidence = `Ended without finishing: ${completion.status.slice(0, 300)}`;
+        }
+      }
     }
     for (const thread of this.state.threads) {
       if (thread.kind === "agent" && thread.resume) {

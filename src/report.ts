@@ -27,6 +27,7 @@ function slug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "thread";
 }
 export function suggestedAction(thread: Thread): string {
+  if (thread.kind === "agent" && thread.state === "failed") return "it stopped with an error; inspect its partial work in the repo/worktree, then resume (if its session still exists) or relaunch with the saved prompt";
   if (thread.kind === "agent") return "verify the work in its repo/worktree, then resume or relaunch with the saved prompt";
   if (thread.kind === "workflow") return `try resumeFromRunId ${thread.id || "<unknown>"} (same session only); otherwise rerun`;
   return /\bgh\s+(?:run\s+watch|pr\s+checks)\b/.test(thread.command || "")
