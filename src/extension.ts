@@ -2,7 +2,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { assistantError, contentText, LIMIT_ERROR } from "./collector.ts";
+import { assistantError, collect, contentText, LIMIT_ERROR } from "./collector.ts";
+import { protectAdoptedJobs, subagentReloadNotice } from "./reload.ts";
 import { RECOVERED_TYPE, recoveryReportPath } from "./markers.ts";
 import { probe } from "./probe.ts";
 import { recoveryPrompt, writeReport } from "./report.ts";
@@ -47,7 +48,7 @@ export interface RecoverOptions {
   onBackgroundTask?: (task: Promise<void>) => void;
 }
 
-function notify(ctx: ExtensionContext, text: string, level: "info" | "error" = "info"): void {
+function notify(ctx: ExtensionContext, text: string, level: "info" | "error" | "warning" = "info"): void {
   try { ctx.ui.notify(text, level); } catch { /* UI is optional; never break the session. */ }
 }
 
@@ -93,7 +94,10 @@ export function createRecoverExtension(options: RecoverOptions = {}) {
           const file = await resolveSession(target, currentFile, ctx.cwd, sessionsRoot, home);
           const isCurrent = currentFile && await realpath(file) === await realpath(currentFile);
           const state = await load(file, isCurrent ? [] : markers);
-          if (isCurrent) protectLiveThreads(state, boundary);
+          if (isCurrent) {
+            protectAdoptedJobs(state, ctx.sessionManager.getSessionId());
+            protectLiveThreads(state, boundary);
+          }
           else if (externalResumeAcknowledged(ctx.sessionManager.getEntries(), await realpath(file))) clearResume(state);
           const loose = looseThreads(state);
           const live = state.threads.filter(thread => thread.state === "live").length;
@@ -122,10 +126,17 @@ export function createRecoverExtension(options: RecoverOptions = {}) {
     pi.on("session_start", (event, ctx) => {
       try {
         const sessionId = ctx.sessionManager.getSessionId();
-        // Every session_start (including /reload) follows a session_shutdown that aborts
-        // pi-subagents work and kills pi-jobs, so everything already in the file belongs to
-        // a dead runner. Always reset the boundary to the current snapshot.
+        // pi-subagents aborts on reload; pi-jobs may retain its process-wide owner.
+        // Reset the history boundary, then protect adopted jobs when inspecting it.
         boundaries.set(sessionId, boundaryCallIds(ctx));
+        if (event.reason === "reload") {
+          const notice = subagentReloadNotice(collect(ctx.sessionManager.getEntries()));
+          if (notice) {
+            notify(ctx, notice, "warning");
+            // Informational only: no automatic recovery turn or relaunch.
+            pi.sendMessage({ customType: "pi-recover-reload", content: notice, display: true });
+          }
+        }
         // CLI --continue/--session uses startup; /resume emits resume.
         if (event.reason !== "startup" && event.reason !== "resume") return;
         const file = ctx.sessionManager.getSessionFile();
@@ -133,6 +144,7 @@ export function createRecoverExtension(options: RecoverOptions = {}) {
         const boundary = boundaries.get(sessionId);
         background(async () => {
           const state = await load(file);
+          protectAdoptedJobs(state, sessionId);
           protectLiveThreads(state, boundary);
           const count = looseThreads(state).length;
           if (count) notify(ctx, `${count} loose threads from the previous run. Run /recover.`);
@@ -158,6 +170,7 @@ export function createRecoverExtension(options: RecoverOptions = {}) {
         background(async () => {
           // message_end runs before persistence. Add this event to the deterministic read.
           const state = await load(file, [{ type: "message", timestamp: new Date(time).toISOString(), message }]);
+          protectAdoptedJobs(state, ctx.sessionManager.getSessionId());
           protectLiveThreads(state, boundary);
           await save(state, await inspect(state), { home, sourceFile: file, now: new Date(time) });
         });

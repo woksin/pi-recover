@@ -135,13 +135,16 @@ test("live-only current sessions, including an explicit symlink target, write a 
   assert.match(await readFile(reportPath(fake.notes[0].text), "utf8"), /Started in this process/);
 });
 
-test("reload kills prior work: existing threads stay loose and are injected", async t => {
+test("reload warns about stopped subagents; explicit recovery can relaunch", async t => {
   const { fake, options } = await setup(t);
   createRecoverExtension(options)(fake.pi as any);
   await fake.emit("session_start", { type: "session_start", reason: "reload" });
   await fake.command();
   assert.equal(fake.sent.length, 1);
-  assert.match(fake.notes[0].text, /^1 loose thread.*; 0 live/);
+  assert.match(fake.notes[0].text, /agent-open.*Recover me/);
+  assert.match(fake.notes[1].text, /^1 loose thread.*; 0 live/);
+  assert.equal(fake.messages.length, 1);
+  assert.match(fake.messages[0].content, /get_subagent_result.*no longer work/);
 });
 
 test("a second session_start resets the boundary so earlier live work becomes loose", async t => {
@@ -152,7 +155,7 @@ test("a second session_start resets the boundary so earlier live work becomes lo
   fake.persist(result("job_start", "live", "Started job j1"));
   await fake.emit("session_start", { type: "session_start", reason: "reload" });
   await fake.command("--dry");
-  assert.match(fake.notes[0].text, /^2 loose threads; 0 live/);
+  assert.match(fake.notes[1].text, /^2 loose threads; 0 live/);
 });
 
 test("zero threads gives notify only, without probe or files", async t => {
@@ -195,14 +198,15 @@ test("external path recovery into a new session records a receipt there and does
   assert.match(fake.notes[2].text, /1 superseded/);
 });
 
-test("session_start resume/startup hint only; new/reload/fork do not notify or write", async t => {
+test("session_start hints on resume/startup, warns on reload, and never relaunches", async t => {
   for (const reason of ["resume", "startup", "new", "reload", "fork"]) {
     const { dir, fake, options } = await setup(t);
     createRecoverExtension({ ...options, probe: async () => { throw new Error("Must not probe"); } })(fake.pi as any);
     await fake.emit("session_start", { type: "session_start", reason });
     await fake.drain();
-    assert.equal(fake.notes.length, ["resume", "startup"].includes(reason) ? 1 : 0);
-    if (fake.notes.length) assert.match(fake.notes[0].text, /1 loose threads from the previous run. Run \/recover/);
+    assert.equal(fake.notes.length, ["resume", "startup", "reload"].includes(reason) ? 1 : 0);
+    if (reason === "reload") assert.match(fake.notes[0].text, /aborted\/disposed/);
+    else if (fake.notes.length) assert.match(fake.notes[0].text, /1 loose threads from the previous run. Run \/recover/);
     assert.equal(fake.sent.length, 0);
     assert.deepEqual(await readdir(dir), ["session.jsonl"]);
   }
@@ -394,4 +398,34 @@ test("a workflow-id record is not mistaken for an agent completion", () => {
   const state = collect([call("SubagentWorkflow", "w"), result("SubagentWorkflow", "w", "Task ID: wf_x"),
     { type: "custom", customType: "subagents:record", data: { id: "wf_x", status: "error" } }]);
   assert.equal(state.threads[0].state, "failed");
+});
+
+
+test("reload notice is informational, includes transcript paths, and never relaunches", async t => {
+  const { fake, options } = await setup(t, false);
+  fake.persist(call("Agent", "agent-call", { description: "Check reload", prompt: "inspect" }));
+  fake.persist(result("Agent", "agent-call", "Agent ID: agent-old\nOutput file: /tmp/agent-old.output"));
+  createRecoverExtension(options)(fake.pi as any);
+  await fake.emit("session_start", { reason: "reload" });
+  assert.equal(fake.sent.length, 0);
+  assert.equal(fake.appended.length, 0);
+  assert.equal(fake.messages.length, 1);
+  assert.equal(fake.notes[0].level, "warning");
+  assert.match(fake.messages[0].content, /agent-old.*Check reload.*unfinished.*\/tmp\/agent-old.output/);
+  assert.match(fake.messages[0].content, /may be partial.*no longer work/s);
+});
+
+test("recover never re-offers a job retained by pi-jobs across reload", async t => {
+  const { fake, options } = await setup(t, false);
+  fake.persist(call("job_start", "job-call", { command: "sleep 30" }));
+  fake.persist(result("job_start", "job-call", "Started job j51"));
+  const key = Symbol.for("pi-jobs.sessionOwners.v1");
+  const global = globalThis as any, saved = global[key];
+  global[key] = new Map([[fake.ctx.sessionManager.getSessionId(), { manager: { get: (id: string) => id === "j51" ? { status: "running" } : undefined } }]]);
+  t.after(() => { if (saved === undefined) delete global[key]; else global[key] = saved; });
+  createRecoverExtension(options)(fake.pi as any);
+  await fake.emit("session_start", { reason: "reload" });
+  await fake.command();
+  assert.equal(fake.sent.length, 0);
+  assert.match(fake.notes[0].text, /nothing to recover; 1 live/);
 });

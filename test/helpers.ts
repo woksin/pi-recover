@@ -29,6 +29,7 @@ export function jobCompletion(id: string, status = "succeeded") {
 export function fakePi(cwd: string, file?: string) {
   const commands = new Map<string, any>();
   const handlers = new Map<string, any[]>();
+  const messages: any[] = [];
   const sent: { text: string; options: unknown }[] = [];
   const notes: { text: string; level: string }[] = [];
   const appended: { customType: string; data: any }[] = [];
@@ -51,6 +52,7 @@ export function fakePi(cwd: string, file?: string) {
     notify: (text: string, level: string) => notes.push({ text, level }),
   } };
   const pi = {
+    sendMessage: (message: any) => { messages.push(message); },
     registerCommand: (name: string, command: any) => commands.set(name, command),
     on: (name: string, handler: any) => handlers.set(name, [...handlers.get(name) ?? [], handler]),
     sendUserMessage: (value: string, options: unknown) => {
@@ -63,7 +65,7 @@ export function fakePi(cwd: string, file?: string) {
       persist({ type: "custom", customType, data });
     },
   };
-  return { pi, ctx, sent, notes, appended, persist,
+  return { pi, ctx, sent, messages, notes, appended, persist,
     trackBackground: (task: Promise<void>) => { tasks.push(task); },
     drain: async () => { await Promise.all(tasks.splice(0)); },
     command: (args = "") => commands.get("recover").handler(args, ctx),
