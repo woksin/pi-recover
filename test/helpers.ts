@@ -48,6 +48,7 @@ export function fakePi(cwd: string, file?: string) {
     getSessionFile: () => file,
     getSessionId: () => entries().find(entry => entry.type === "session")?.id ?? "fresh-session",
     getEntries: () => entries().filter(entry => entry.type !== "session"),
+    getBranch: () => entries().filter(entry => entry.type !== "session"),
   }, ui: {
     notify: (text: string, level: string) => notes.push({ text, level }),
   } };

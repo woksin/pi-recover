@@ -6,7 +6,7 @@ import defaultExtension, { createRecoverExtension } from "../src/extension.ts";
 import { collect } from "../src/collector.ts";
 import { RECOVERED_TYPE, RECOVERY_PROMPT_MARKER } from "../src/markers.ts";
 import { parseArguments, readSession, resolveSession } from "../src/sessions.ts";
-import { call, result, session, tempDir, fakePi, text, deferred } from "./helpers.ts";
+import { call, result, session, tempDir, fakePi, text, deferred, notification } from "./helpers.ts";
 
 async function setup(t: Parameters<typeof tempDir>[0], loose = true) {
   const dir = tempDir(t), file = join(dir, "session.jsonl");
@@ -418,14 +418,29 @@ test("reload notice is informational, includes transcript paths, and never relau
 test("recover never re-offers a job retained by pi-jobs across reload", async t => {
   const { fake, options } = await setup(t, false);
   fake.persist(call("job_start", "job-call", { command: "sleep 30" }));
-  fake.persist(result("job_start", "job-call", "Started job j51"));
-  const key = Symbol.for("pi-jobs.sessionOwners.v1");
+  fake.persist(result("job_start", "job-call", "Started job j51", { id: "j51", logPath: "/tmp/j51.log", startedAt: 123 }));
+  const key = Symbol.for("pi-jobs.sessionOwners.v2");
   const global = globalThis as any, saved = global[key];
-  global[key] = new Map([[fake.ctx.sessionManager.getSessionId(), { manager: { get: (id: string) => id === "j51" ? { status: "running" } : undefined } }]]);
+  global[key] = new Map([[fake.ctx.sessionManager.getSessionId(), { version: 2, manager: { get: (id: string) => id === "j51" ? { id, status: "running", logPath: "/tmp/j51.log", startedAt: 123 } : undefined } }]]);
   t.after(() => { if (saved === undefined) delete global[key]; else global[key] = saved; });
   createRecoverExtension(options)(fake.pi as any);
   await fake.emit("session_start", { reason: "reload" });
   await fake.command();
   assert.equal(fake.sent.length, 0);
   assert.match(fake.notes[0].text, /nothing to recover; 1 live/);
+});
+
+
+test("finished, superseded and off-branch agents produce no reload message", async t => {
+  const { fake, options } = await setup(t, false);
+  fake.persist(call("Agent", "done-call", { description: "Done long ago" }));
+  fake.persist(result("Agent", "done-call", "Agent ID: done-agent"));
+  fake.persist(notification("done-agent"));
+  fake.persist(call("Agent", "off-branch", { description: "Other branch" }));
+  fake.persist(result("Agent", "off-branch", "Agent ID: off-branch-agent"));
+  fake.ctx.sessionManager.getBranch = () => fake.ctx.sessionManager.getEntries().slice(0, 4);
+  createRecoverExtension(options)(fake.pi as any);
+  await fake.emit("session_start", { reason: "reload" });
+  assert.equal(fake.notes.length, 0);
+  assert.equal(fake.messages.length, 0);
 });

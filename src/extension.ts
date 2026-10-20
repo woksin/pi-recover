@@ -130,7 +130,7 @@ export function createRecoverExtension(options: RecoverOptions = {}) {
         // Reset the history boundary, then protect adopted jobs when inspecting it.
         boundaries.set(sessionId, boundaryCallIds(ctx));
         if (event.reason === "reload") {
-          const notice = subagentReloadNotice(collect(ctx.sessionManager.getEntries()));
+          const notice = subagentReloadNotice(collect(ctx.sessionManager.getBranch()));
           if (notice) {
             notify(ctx, notice, "warning");
             // Informational only: no automatic recovery turn or relaunch.
