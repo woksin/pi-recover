@@ -1,6 +1,6 @@
 {
   "name": "@woksin/pi-recover",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Recover unfinished pi subagents, workflows and jobs with deterministic session reports and /recover",
   "license": "MIT",
   "author": "woksin",
