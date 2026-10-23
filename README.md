@@ -1,6 +1,33 @@
 # pi-recover
 
-Recover loose threads after a usage limit, crash, or killed terminal. This Pi extension reads the session JSONL deterministically, saves a recovery report and original agent prompts, and optionally sends **one user message** asking the model to check reality and recover unfinished work.
+Recover loose threads in pi after a usage limit, crash or killed terminal.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![npm](https://img.shields.io/npm/v/@woksin/pi-recover.svg)](https://www.npmjs.com/package/@woksin/pi-recover) [![CI](https://img.shields.io/github/actions/workflow/status/woksin/pi-recover/ci.yml?label=CI)](https://github.com/woksin/pi-recover/actions/workflows/ci.yml)
+
+The extension reads the session JSONL deterministically, saves a recovery report and the original agent prompts, and optionally sends one user message asking the model to check reality and recover unfinished work. It never relaunches anything itself.
+
+## Why
+
+- A usage limit or crash leaves subagents, workflows and background jobs half done, and the session does not say which.
+- Reconstructing that by hand from a transcript is slow and easy to get wrong.
+- The model should decide what to rerun only after checking what actually finished.
+
+## Features
+
+- `/recover` lists unfinished threads and injects one recovery prompt.
+- `/recover --dry` writes the same report and injects nothing.
+- Reports and original prompts are saved under `.ai-work/recover/`.
+- A silent checkpoint is written when an assistant message ends in a usage-limit or rate-limit error.
+- Runs without a model call during scanning, and is read-only toward your sessions.
+
+## Quick start
+
+```sh
+pi install npm:@woksin/pi-recover
+pi --continue
+```
+
+Then run `/recover --dry` to see the report, or `/recover` to send the recovery prompt. Details are below.
 
 ## Install
 
@@ -99,3 +126,14 @@ layout. `npm test` and `npm run typecheck` are the local gates; neither calls a 
 ## Releasing
 
 CI (`.github/workflows/ci.yml`) runs the tests on Node 22 and 24 for every push and pull request. To release, bump `version` in `package.json`, commit, and publish a GitHub release tagged `v<version>`. `.github/workflows/publish.yml` then runs CI again and publishes to npm with provenance. That works through npm trusted publishing when it is set up for this repository, or otherwise through an `NPM_TOKEN` repository secret.
+
+## Related projects
+
+- [pi-setup](https://github.com/woksin/pi-setup): my full pi agent setup (rules, agents, extensions, installer) that ties these together
+- [pi-jobs](https://github.com/woksin/pi-jobs): background shell jobs and watches that wake the agent when they finish
+- [pi-context-budget](https://github.com/woksin/pi-context-budget): structured context handoffs and bounded long sessions
+- [pi-orch](https://github.com/woksin/pi-orch) (experimental): repo-owner orchestration with an order bus and batched candidate PRs
+
+## License
+
+MIT, see [LICENSE](LICENSE).
